@@ -213,7 +213,7 @@ details.more summary { cursor: pointer; font-weight: 650; color: var(--accent); 
 /* ---- sheets & dialogs */
 .scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 50; display: flex; align-items: flex-end; justify-content: center; }
 .sheet { background: var(--bg); width: 100%; max-width: 640px; max-height: calc(100% - 24px - env(safe-area-inset-top, 0px)); border-radius: 20px 20px 0 0; display: flex; flex-direction: column; overflow: hidden; animation: up .2s ease-out; }
-@keyframes up { from { transform: translateY(24px); opacity: .6; } }
+@keyframes up { from { transform: translateY(32px); } }
 @media (prefers-reduced-motion: reduce) { .sheet { animation: none; } }
 .sheet-h { display: flex; align-items: center; gap: 8px; padding: 10px 8px 10px 16px; border-bottom: 1px solid var(--line-2); background: var(--surface); }
 .sheet-h h2 { font-size: 18px; flex: 1; min-width: 0; }
@@ -290,7 +290,7 @@ dl.kv dd { text-align: right; font-weight: 600; font-variant-numeric: tabular-nu
 (function (root) {
 'use strict';
 const C = {};
-C.VERSI = '1.0.0';
+C.VERSI = '1.0.1';
 
 /* ---------------------------------------------------------------- money */
 C.mulDiv = function (a, b, c) { // round-half-away-from-zero(a*b/c), exact via BigInt
@@ -604,8 +604,9 @@ C.jurnal = function (S, from, to) {
       }
     } else if (t === 'gaji') {
       if (kb.gaji !== 'kas') {
-        const m = 'Gaji ' + nm(d.emp) + ' ' + C.fmtTgl(d.dari) + '–' + C.fmtTgl(d.sampai);
-        add(d.tgl, 'BBN', d.bruto, id, t, { kat: 'gaji', s: d.emp, m });
+        const lembur = (d.komponen || 'pokok') === 'tambahan';
+        const m = (lembur ? 'Lembur/bonus ' : 'Gaji ') + nm(d.emp) + (lembur && d.ket ? ' – ' + d.ket : '') + ' ' + C.fmtTgl(d.dari) + '–' + C.fmtTgl(d.sampai);
+        add(d.tgl, 'BBN', d.bruto, id, t, { kat: 'gaji', s: d.emp, m, sub: lembur ? 'lembur' : 'pokok' });
         add(d.tgl, 'UGJ', -d.bruto, id, t, { s: d.emp, m });
       }
     } else if (t === 'bgaji') {
@@ -682,6 +683,7 @@ C.laporan = function (S, from, to, opt) {
     from, to, hari: C.diffDays(from, to) + 1, batchId: batch,
     pendapatan: { panen, lain, total: panen + lain },
     beban, bebanTotal, gaji, bebanOperasional: bebanTotal - gaji,
+    lembur: C.sum(Wb.filter(l => l.a === 'BBN' && l.sub === 'lembur').map(l => l.v)),
     laba: panen + lain - bebanTotal,
     W, Wb,
   };
@@ -728,7 +730,7 @@ C.hitungTransaksi = function (S, from, to, batch) {
 C.rincian = function (S, R, kunci) {
   let L;
   const src = kunci.kas ? R.W : R.Wb;
-  if (kunci.akun === 'BBN') L = src.filter(l => l.a === 'BBN' && (!kunci.kat || l.kat === kunci.kat));
+  if (kunci.akun === 'BBN') L = src.filter(l => l.a === 'BBN' && (!kunci.kat || l.kat === kunci.kat) && (!kunci.sub || l.sub === kunci.sub));
   else if (kunci.akun === 'KAS') L = src.filter(l => l.a === 'KAS' && (!kunci.cf || l.cf === kunci.cf));
   else if (kunci.akun === 'KSB') L = src.filter(l => l.a === 'KSB' && l.s === kunci.s && (!kunci.sub || l.sub === kunci.sub));
   else L = src.filter(l => l.a === kunci.akun);
@@ -914,12 +916,13 @@ C.ringkasABK = function (S, empId, sampai) {
   const potong = C.sum(D.filter(d => d.t === 'bgaji').map(d => d.potong || 0));
   const langsung = C.sum(D.filter(d => d.t === 'bkasbon').map(d => d.jumlah));
   const gajiBruto = C.sum(D.filter(d => d.t === 'gaji').map(d => d.bruto));
+  const lemburTotal = C.sum(D.filter(d => d.t === 'gaji' && (d.komponen || 'pokok') === 'tambahan').map(d => d.bruto));
   const dibayarTunai = C.sum(D.filter(d => d.t === 'bgaji').map(d => d.tunai || 0));
   const terakhir = D.filter(d => d.t === 'bgaji').sort((a, b) => (a.tgl < b.tgl ? 1 : -1))[0];
   return {
     kasbonAwal: awal, kasbonBaru: kasbon, kasbonTotal: awal + kasbon, kasbonDipotong: potong, kasbonLangsung: langsung,
     sisaKasbon: awal + kasbon - potong - langsung,
-    gajiBruto, gajiDibayarTunai: dibayarTunai, gajiDipotong: potong, utangGaji: gajiBruto - dibayarTunai - potong,
+    gajiBruto, lemburTotal, gajiDibayarTunai: dibayarTunai, gajiDipotong: potong, utangGaji: gajiBruto - dibayarTunai - potong,
     bayarTerakhir: terakhir || null,
   };
 };
@@ -1023,7 +1026,7 @@ C.validasi = function (S, d) {
     err(E, pos(d.bruto), 'Gaji bruto harus lebih dari 0.');
     if ((d.komponen || 'pokok') === 'pokok' && C.isISO(d.dari) && C.isISO(d.sampai)) {
       const tabrak = lainnya.find(x => x.t === 'gaji' && x.emp === d.emp && (x.komponen || 'pokok') === 'pokok' && x.dari <= d.sampai && d.dari <= x.sampai);
-      err(E, !tabrak, tabrak ? 'Gaji pokok ABK ini untuk ' + C.fmtTgl(tabrak.dari) + '–' + C.fmtTgl(tabrak.sampai) + ' sudah dicatat (' + tabrak.no + '). Ubah transaksi itu, atau pilih komponen "Tambahan" untuk bonus/lembur.' : '');
+      err(E, !tabrak, tabrak ? 'Gaji pokok ABK ini untuk ' + C.fmtTgl(tabrak.dari) + '–' + C.fmtTgl(tabrak.sampai) + ' sudah dicatat (' + tabrak.no + '). Untuk lembur atau bonus, isi kolom "Lembur / bonus" saja.' : '');
     }
   } else if (d.t === 'bgaji') {
     const tunai = d.tunai || 0, pot = d.potong || 0;
@@ -1342,7 +1345,8 @@ function laporanPdf(pack) {
   F.judul('B. Laporan Pengeluaran (beban per kategori)', 'Kasbon ABK bukan beban; kasbon tercatat sebagai piutang ABK (bagian D dan E). Pembelian peralatan dan biaya dibayar di muka dibebankan bertahap.');
   const kats = gab.beban.map(b => b.kat);
   for (const c of cols) for (const b of c.r.beban) if (!kats.includes(b.kat)) kats.push(b.kat);
-  F.tabel(cols, kats.map(k => ({ label: C.namaKategori(S, k), vals: v(r => (r.beban.find(b => b.kat === k) || { jumlah: 0 }).jumlah) }))
+  F.tabel(cols, [].concat(...kats.map(k => [{ label: C.namaKategori(S, k), vals: v(r => (r.beban.find(b => b.kat === k) || { jumlah: 0 }).jumlah) }]
+    .concat(k === 'gaji' && cols.some(c => c.r.lembur) ? [{ label: 'termasuk lembur / bonus', vals: v(r => r.lembur || 0), indent: 1 }] : [])))
     .concat([{ label: 'Total beban', vals: v(r => r.bebanTotal), bold: true, garis: true }]));
 
   F.judul('C. Laporan Laba Rugi');
@@ -1483,7 +1487,7 @@ E.keterangan = function (S, d) {
     case 'jual': return 'Penjualan ' + C.ekorJual(d) + ' ekor' + (C.gramJual(d) ? ', ' + C.fmtKg(C.gramJual(d)) : '') + ' ke ' + d.pembeli;
     case 'plain': return d.ket;
     case 'biaya': return C.namaKategori(S, d.kat) + ': ' + d.desk;
-    case 'gaji': return 'Gaji ' + E.pihak(S, d) + ' ' + C.fmtTgl(d.dari) + '–' + C.fmtTgl(d.sampai) + ((d.komponen || 'pokok') === 'tambahan' ? ' (tambahan)' : '');
+    case 'gaji': return ((d.komponen || 'pokok') === 'tambahan' ? 'Lembur/bonus ' + E.pihak(S, d) + (d.ket ? ' – ' + d.ket : '') : 'Gaji pokok ' + E.pihak(S, d)) + ' ' + C.fmtTgl(d.dari) + '–' + C.fmtTgl(d.sampai);
     case 'bgaji': return 'Bayar gaji ' + E.pihak(S, d) + ': tunai ' + C.fmtRp(d.tunai || 0) + (d.potong ? ', potong kasbon ' + C.fmtRp(d.potong) : '');
     case 'kasbon': return 'Kasbon ' + E.pihak(S, d);
     case 'bkasbon': return 'Pelunasan kasbon ' + E.pihak(S, d);
@@ -1516,7 +1520,10 @@ E.csvLabaRugi = function (P, sep) {
     ['Pendapatan panen'].concat(v(r => r.pendapatan.panen)),
     ['Pendapatan lainnya'].concat(v(r => r.pendapatan.lain)),
     ['Total pendapatan'].concat(v(r => r.pendapatan.total))];
-  for (const k of kats) rows.push(['Beban ' + C.namaKategori(S, k)].concat(v(r => (r.beban.find(b => b.kat === k) || { jumlah: 0 }).jumlah)));
+  for (const k of kats) {
+    rows.push(['Beban ' + C.namaKategori(S, k)].concat(v(r => (r.beban.find(b => b.kat === k) || { jumlah: 0 }).jumlah)));
+    if (k === 'gaji' && cols.some(c => c.r.lembur)) rows.push(['  termasuk lembur / bonus'].concat(v(r => r.lembur || 0)));
+  }
   rows.push(['Total beban'].concat(v(r => r.bebanTotal)));
   rows.push(['Laba sebelum pajak'].concat(v(r => r.laba)));
   if (P.gab.pajak.terhitung) {
@@ -1633,6 +1640,63 @@ root.BKSkenario = skenario;
 /* Victory Chicken Farm brand marks (generated by tools/logo.py) */
 const BRAND = {"mark": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\"><defs><linearGradient id=\"kbg\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#2B62AB\"/><stop offset=\"1\" stop-color=\"#112E57\"/></linearGradient><linearGradient id=\"kgold\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0\" stop-color=\"#FFD35E\"/><stop offset=\".55\" stop-color=\"#F9B23A\"/><stop offset=\"1\" stop-color=\"#EE7F22\"/></linearGradient><radialGradient id=\"khalo\" cx=\".5\" cy=\".46\" r=\".5\"><stop offset=\"0\" stop-color=\"#FFFFFF\" stop-opacity=\".18\"/><stop offset=\"1\" stop-color=\"#FFFFFF\" stop-opacity=\"0\"/></radialGradient></defs><rect width=\"512\" height=\"512\" rx=\"112\" fill=\"url(#kbg)\"/><circle cx=\"256\" cy=\"246\" r=\"230\" fill=\"url(#khalo)\"/><g transform=\"translate(34.12 74.52) scale(0.86)\"><path d=\"M150 160 C166 112 168 70 152 26 C190 66 204 112 198 160 Z\" fill=\"#E5412F\"/><path d=\"M126 164 C126 120 108 84 64 56 C124 66 170 104 186 160 Z\" fill=\"#F7A229\"/><path d=\"M118 178 C102 150 80 132 40 126 C92 116 136 130 164 164 Z\" fill=\"#E36F1E\"/><path d=\"M112 150 L198 150 L258 296 L314 194 L398 194 L258 410 Z\" fill=\"url(#kgold)\"/><circle cx=\"312\" cy=\"118\" r=\"21\" fill=\"#E5412F\"/><circle cx=\"334\" cy=\"92\" r=\"26\" fill=\"#E5412F\"/><circle cx=\"364\" cy=\"80\" r=\"29\" fill=\"#E5412F\"/><circle cx=\"394\" cy=\"90\" r=\"24\" fill=\"#E5412F\"/><circle cx=\"414\" cy=\"112\" r=\"17\" fill=\"#E5412F\"/><path d=\"M386 196 C380 232 386 260 404 262 C422 260 424 230 414 196 Z\" fill=\"#C7321F\"/><path d=\"M404 136 L476 160 L404 186 Z\" fill=\"#E98A1F\"/><path d=\"M404 136 L476 160 L404 160 Z\" fill=\"#FFB43E\"/><path d=\"M302 202 L314 244 L330 220 L343 256 L357 226 L371 252 L384 222 L398 240 L410 206 Z\" fill=\"#EF8A24\"/><circle cx=\"360\" cy=\"162\" r=\"64\" fill=\"#FFC948\"/><circle cx=\"383\" cy=\"150\" r=\"11.5\" fill=\"#0B2142\"/><circle cx=\"387\" cy=\"145.5\" r=\"3.8\" fill=\"#FFFFFF\"/><path d=\"M470 44 Q476.16 59.84 492 66 Q476.16 72.16 470 88 Q463.84 72.16 448 66 Q463.84 59.84 470 44 Z\" fill=\"#FFFFFF\" opacity=\".95\"/></g></svg>", "word": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 -4 581 166\" role=\"img\" aria-label=\"Victory Chicken Farm\"><path d=\"M49.3 12.9H86.7V31.2H82.2L62.2 100H25.9L5.8 31.2H1.3V12.9H44.4V31.2H38.5L46.3 68.8H47.4L55.1 31.2H49.3Z M92.3 100V81.6H97.9V31.2H92.3V12.9H134.8V31.2H129.2V81.6H134.8V100Z M140.6 56.4Q140.6 11.3 184.5 11.3Q195.2 11.3 204.3 13.9Q213.4 16.4 217.9 19.6V47.6H191V39.5Q191 35.3 189.1 33.2Q187.2 31.2 183.4 31.2Q179.6 31.2 177.7 33.2Q175.8 35.3 175.8 39.5V73.3Q175.8 77.6 177.7 79.6Q179.6 81.6 183.4 81.6Q187.2 81.6 189.1 79.6Q191 77.6 191 73.3V64.3H217.9V93.3Q213.3 96.4 204.3 99Q195.3 101.6 184.8 101.6Q163.6 101.6 152.1 90.8Q140.6 80.1 140.6 56.4Z M307.7 40H288.5V31.2H281.3V81.6H289.1V100H242.1V81.6H249.9V31.2H242.8V40H223.5V12.9H307.7Z M312.9 56.4Q312.9 32.8 324 22Q335.2 11.3 355.6 11.3Q376.1 11.3 387.3 22Q398.4 32.8 398.4 56.4Q398.4 80.1 387.3 90.8Q376.1 101.6 355.6 101.6Q335.2 101.6 324 90.8Q312.9 80.1 312.9 56.4ZM363.3 73.3V39.5Q363.3 35.3 361.4 33.2Q359.5 31.2 355.6 31.2Q351.8 31.2 349.9 33.2Q348 35.3 348 39.5V73.3Q348 77.7 349.9 79.7Q351.8 81.6 355.6 81.6Q359.5 81.6 361.4 79.6Q363.3 77.6 363.3 73.3Z M404.2 81.6H409.8V31.2H404.2V12.9H455.6Q470.1 12.9 477.7 18.8Q485.3 24.7 485.3 38.1Q485.3 45.6 482.3 51.1Q479.3 56.5 473.7 58.7L473.8 59.8Q484.5 61.5 484.5 73V81.6H489.8V100H454.3V73.7Q454.3 69.3 453 67.1Q451.7 64.8 449 64Q446.2 63.3 441.2 63.3V81.6H448.6V100H404.2ZM447.2 49.6Q450.5 49.6 452.1 47.9Q453.7 46.1 453.7 42.4V38.4Q453.7 34.7 452.1 33Q450.5 31.2 447.2 31.2H441.2V49.6Z M544.8 12.9H579.2V31.2H574.7L553.1 70V81.6H558.7V100H516.1V81.6H521.7V70L499.4 31.2H494.9V12.9H538.3V31.2H534.4L541 48.6H542.1L548.7 31.2H544.8Z\" fill=\"currentColor\"/><path transform=\"translate(121.0 0)\" d=\"M2.2 143.3V133.8Q2.2 131.1 3.3 129Q4.5 127 6.7 125.9Q8.9 124.7 11.8 124.7Q14.7 124.7 16.9 125.8Q19.1 126.9 20.3 128.9Q21.4 130.8 21.4 133.4Q21.4 133.6 21.3 133.7Q21.2 133.9 21 133.9L17.4 134.1Q17 134.1 17 133.6Q17 131.4 15.6 130Q14.2 128.6 11.8 128.6Q9.5 128.6 8 130Q6.6 131.4 6.6 133.6V143.5Q6.6 145.7 8 147.1Q9.5 148.5 11.8 148.5Q14.2 148.5 15.6 147.1Q17 145.7 17 143.5Q17 143 17.4 143L21 143.2Q21.2 143.2 21.3 143.3Q21.4 143.4 21.4 143.6Q21.4 146.2 20.3 148.2Q19.1 150.2 16.9 151.2Q14.7 152.3 11.8 152.3Q8.9 152.3 6.7 151.2Q4.5 150 3.3 148Q2.2 146 2.2 143.3Z M48.5 125H52.1Q52.3 125 52.4 125.2Q52.6 125.3 52.6 125.5V151.5Q52.6 151.7 52.4 151.9Q52.3 152 52.1 152H48.5Q48.4 152 48.2 151.9Q48.1 151.7 48.1 151.5V140.5Q48.1 140.3 47.9 140.3H38.1Q37.9 140.3 37.9 140.5V151.5Q37.9 151.7 37.7 151.9Q37.6 152 37.4 152H33.9Q33.7 152 33.6 151.9Q33.4 151.7 33.4 151.5V125.5Q33.4 125.3 33.6 125.2Q33.7 125 33.9 125H37.4Q37.6 125 37.7 125.2Q37.9 125.3 37.9 125.5V136.3Q37.9 136.5 38.1 136.5H47.9Q48.1 136.5 48.1 136.3V125.5Q48.1 125.3 48.2 125.2Q48.4 125 48.5 125Z M65.1 151.5V125.5Q65.1 125.3 65.3 125.2Q65.4 125 65.6 125H69.1Q69.3 125 69.5 125.2Q69.6 125.3 69.6 125.5V151.5Q69.6 151.7 69.5 151.9Q69.3 152 69.1 152H65.6Q65.4 152 65.3 151.9Q65.1 151.7 65.1 151.5Z M81.8 143.3V133.8Q81.8 131.1 83 129Q84.2 127 86.4 125.9Q88.6 124.7 91.4 124.7Q94.3 124.7 96.5 125.8Q98.7 126.9 99.9 128.9Q101.1 130.8 101.1 133.4Q101.1 133.6 100.9 133.7Q100.8 133.9 100.6 133.9L97.1 134.1Q96.6 134.1 96.6 133.6Q96.6 131.4 95.2 130Q93.8 128.6 91.4 128.6Q89.1 128.6 87.7 130Q86.2 131.4 86.2 133.6V143.5Q86.2 145.7 87.7 147.1Q89.1 148.5 91.4 148.5Q93.8 148.5 95.2 147.1Q96.6 145.7 96.6 143.5Q96.6 143 97.1 143L100.6 143.2Q100.8 143.2 100.9 143.3Q101.1 143.4 101.1 143.6Q101.1 146.2 99.9 148.2Q98.7 150.2 96.5 151.2Q94.3 152.3 91.4 152.3Q88.6 152.3 86.4 151.2Q84.2 150 83 148Q81.8 146 81.8 143.3Z M113 151.5V125.5Q113 125.3 113.2 125.2Q113.3 125 113.5 125H117Q117.2 125 117.4 125.2Q117.5 125.3 117.5 125.5V137Q117.5 137.1 117.6 137.2Q117.7 137.2 117.7 137.1L127.7 125.3Q128 125 128.3 125H132.3Q132.7 125 132.7 125.3Q132.7 125.4 132.6 125.6L123.8 136.4Q123.7 136.6 123.7 136.7L133.2 151.5Q133.3 151.7 133.3 151.7Q133.3 152 132.9 152H128.9Q128.5 152 128.3 151.7L120.7 139.8Q120.5 139.6 120.4 139.8L117.6 143.1Q117.5 143.3 117.5 143.4V151.5Q117.5 151.7 117.4 151.9Q117.2 152 117 152H113.5Q113.3 152 113.2 151.9Q113 151.7 113 151.5Z M161.9 128.9H148.8Q148.6 128.9 148.6 129.1V136.3Q148.6 136.5 148.8 136.5H157.6Q157.8 136.5 157.9 136.6Q158 136.8 158 136.9V139.9Q158 140.1 157.9 140.2Q157.8 140.3 157.6 140.3H148.8Q148.6 140.3 148.6 140.5V148Q148.6 148.2 148.8 148.2H161.9Q162.1 148.2 162.2 148.3Q162.4 148.4 162.4 148.6V151.5Q162.4 151.7 162.2 151.9Q162.1 152 161.9 152H144.6Q144.4 152 144.2 151.9Q144.1 151.7 144.1 151.5V125.5Q144.1 125.3 144.2 125.2Q144.4 125 144.6 125H161.9Q162.1 125 162.2 125.2Q162.4 125.3 162.4 125.5V128.4Q162.4 128.6 162.2 128.8Q162.1 128.9 161.9 128.9Z M190.2 125H193.8Q194 125 194.1 125.2Q194.2 125.3 194.2 125.5V151.5Q194.2 151.7 194.1 151.9Q194 152 193.8 152H190.3Q190 152 189.8 151.7L178.7 133.5Q178.6 133.4 178.6 133.4Q178.5 133.4 178.5 133.6L178.6 151.5Q178.6 151.7 178.4 151.9Q178.3 152 178.1 152H174.6Q174.4 152 174.2 151.9Q174.1 151.7 174.1 151.5V125.5Q174.1 125.3 174.2 125.2Q174.4 125 174.6 125H178Q178.4 125 178.5 125.4L189.6 143.5Q189.7 143.6 189.7 143.6Q189.8 143.6 189.8 143.5L189.8 125.5Q189.8 125.3 189.9 125.2Q190 125 190.2 125Z M239.7 128.9H226.6Q226.4 128.9 226.4 129.1V136.3Q226.4 136.5 226.6 136.5H235.4Q235.6 136.5 235.8 136.6Q235.9 136.8 235.9 136.9V139.9Q235.9 140.1 235.8 140.2Q235.6 140.3 235.4 140.3H226.6Q226.4 140.3 226.4 140.5V151.5Q226.4 151.7 226.3 151.9Q226.2 152 226 152H222.4Q222.2 152 222.1 151.9Q222 151.7 222 151.5V125.5Q222 125.3 222.1 125.2Q222.2 125 222.4 125H239.7Q239.9 125 240 125.2Q240.2 125.3 240.2 125.5V128.4Q240.2 128.6 240 128.8Q239.9 128.9 239.7 128.9Z M267 151.6 265.8 147.5Q265.7 147.3 265.6 147.3H255.4Q255.3 147.3 255.2 147.5L254 151.6Q253.8 152 253.4 152H249.6Q249.4 152 249.3 151.9Q249.1 151.7 249.2 151.5L257.6 125.4Q257.7 125 258.1 125H262.9Q263.3 125 263.4 125.4L271.8 151.5Q271.8 151.5 271.8 151.7Q271.8 152 271.4 152H267.5Q267.2 152 267 151.6ZM256.6 143.8H264.4Q264.6 143.8 264.5 143.6L260.6 130.7Q260.5 130.6 260.5 130.6Q260.4 130.6 260.3 130.7L256.4 143.6Q256.4 143.8 256.6 143.8Z M297.6 151.7 292.5 140.6Q292.4 140.4 292.3 140.4H287.6Q287.4 140.4 287.4 140.6V151.5Q287.4 151.7 287.3 151.9Q287.2 152 287 152H283.4Q283.2 152 283.1 151.9Q283 151.7 283 151.5V125.5Q283 125.3 283.1 125.2Q283.2 125 283.4 125H294Q296.4 125 298.2 126Q300 127 301 128.8Q302 130.6 302 132.9Q302 135.6 300.6 137.4Q299.3 139.3 296.8 140Q296.8 140 296.7 140.1Q296.7 140.2 296.7 140.3L302.2 151.5Q302.2 151.6 302.2 151.7Q302.2 152 301.8 152H298.1Q297.7 152 297.6 151.7ZM287.4 129.1V136.8Q287.4 136.9 287.6 136.9H293.4Q295.3 136.9 296.4 135.8Q297.5 134.8 297.5 132.9Q297.5 131.1 296.4 130Q295.3 128.9 293.4 128.9H287.6Q287.4 128.9 287.4 129.1Z M331.7 125H335.2Q335.4 125 335.6 125.2Q335.7 125.3 335.7 125.5V151.5Q335.7 151.7 335.6 151.9Q335.4 152 335.2 152H331.7Q331.5 152 331.4 151.9Q331.2 151.7 331.2 151.5V133.2Q331.2 133.1 331.1 133Q331 133 331 133.1L326.2 140.5Q326 140.8 325.6 140.8H323.9Q323.5 140.8 323.3 140.5L318.5 133.1Q318.4 133 318.3 133.1Q318.2 133.1 318.2 133.2V151.5Q318.2 151.7 318.1 151.9Q318 152 317.8 152H314.2Q314 152 313.9 151.9Q313.8 151.7 313.8 151.5V125.5Q313.8 125.3 313.9 125.2Q314 125 314.2 125H317.8Q318.1 125 318.3 125.4L324.6 134.9Q324.7 134.9 324.8 134.9Q324.8 134.9 324.9 134.9L331.1 125.4Q331.3 125 331.7 125Z\" style=\"fill:var(--brand-gold, #D9771A)\"/></svg>"};
 
+/* ===== native iPhone app bridge =====
+ * The Swift shell injects window.BK_NATIVE before the page loads and answers
+ * window.webkit.messageHandlers.bk.postMessage({aksi, ...}) with a Promise. */
+const NATIVE = !!window.BK_NATIVE;
+function asli(aksi, data) {
+  try { return window.webkit.messageHandlers.bk.postMessage(Object.assign({ aksi }, data || {})); }
+  catch (e) { return Promise.reject(e); }
+}
+const subtleOK = () => !!(window.crypto && crypto.subtle && window.isSecureContext !== false);
+
+/* Automatic backup: a few seconds after every change, the full backup JSON is handed to the
+ * app, which keeps the latest copy plus one per day (30 days) in its Documents folder
+ * (visible in Files › On My iPhone › Victory Farm). It protects against web-storage loss;
+ * it is removed together with the app, so off-device backups are still needed. */
+let cadT = null, cadTertunda = false;
+function jadwalCadanganOtomatis() {
+  if (!NATIVE || MODE !== 'utama' || !S || !S.settings) return;
+  cadTertunda = true; clearTimeout(cadT); cadT = setTimeout(simpanCadanganOtomatis, 4000);
+}
+async function simpanCadanganOtomatis() {
+  if (!cadTertunda || !NATIVE || MODE !== 'utama' || !S || !S.settings) return;
+  cadTertunda = false; clearTimeout(cadT);
+  try {
+    const obj = await isiCadangan();
+    await asli('cadanganOtomatis', { json: JSON.stringify(obj), transaksi: S.docs.filter(d => !d.dihapus).length });
+  } catch (e) { cadTertunda = true; console.warn('Cadangan otomatis gagal', e); }
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && cadTertunda) simpanCadanganOtomatis(); });
+
+async function infoCadanganOtomatis() {
+  if (!NATIVE) return null;
+  try { const r = await asli('infoCadangan'); return r && r.ada ? r : null; } catch (e) { return null; }
+}
+/* Fresh start (new install, or after "Hapus semua data"): offer the automatic backup first. */
+async function tawarkanPulihOtomatis() {
+  const info = await infoCadanganOtomatis();
+  if (!info) return false;
+  let selesai = false;
+  const mulaiBaru = async () => { if (selesai) return; selesai = true; try { await asli('arsipkanCadangan'); } catch (e) { /* ok */ } mulaiPertama(); };
+  sheet({
+    judul: 'Data sebelumnya ditemukan', tanpaDirty: true,
+    isi: '<div class="brand-hero small-hero">' + logo() + BRAND.word + '</div>' +
+      '<p style="margin:0">Aplikasi menemukan cadangan otomatis di iPhone ini.</p><dl class="kv"><dt>Disimpan</dt><dd>' + esc(waktuLokal(info.waktu)) + '</dd><dt>Transaksi</dt><dd>' + C.fmtAngka(info.transaksi || 0) + '</dd><dt>Ukuran</dt><dd>' + Math.ceil((info.ukuran || 0) / 1024) + ' KB</dd></dl>' +
+      '<p class="small muted" style="margin:0">Pilih <b>Pulihkan</b> untuk melanjutkan dengan data itu. <b>Mulai baru</b> menyimpan cadangan lama dengan nama lain di folder yang sama, lalu memulai pembukuan kosong.</p>',
+    onClose: () => { mulaiBaru(); },
+    tombol: [{ label: 'Mulai baru', async aksi(h) { await h.tutup(true); } }, {
+      label: 'Pulihkan', cls: 'primary', async aksi(h) {
+        let obj;
+        try { obj = JSON.parse((await asli('muatCadangan')).json); } catch (e) { return tampilError(h, ['Cadangan otomatis tidak bisa dibaca. Coba pulihkan dari berkas cadangan di Pengaturan.']); }
+        selesai = true; await h.tutup(true);
+        tinjauPulih(obj, { saatKosong: true });
+      },
+    }],
+  });
+  return true;
+}
+
 /* ===== Victory Chicken Farm app — base: utilities, storage, state, components ===== */
 const C = window.BKCore, E = window.BKEkspor, PDF = window.BKPdf;
 const $ = (s, r) => (r || document).querySelector(s);
@@ -1642,6 +1706,9 @@ const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 
 const rp = n => C.fmtRp(n);
 const tglF = s => C.fmtTgl(s);
 const today = () => C.hariIni();
+const ANDROID = /Android/i.test(navigator.userAgent || '');
+let promptPasang = null; // Chrome on Android: deferred "Install app" prompt
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); promptPasang = e; try { if (S && S.settings && UI.tab === 'beranda') render(); } catch (x) { /* not ready */ } });
 const waktuLokal = iso => { const d = new Date(iso); return isNaN(d) ? '' : C.fmtTgl(C.hariIni(d)) + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
 const clone = o => JSON.parse(JSON.stringify(o));
 const singkat = v => {
@@ -1731,7 +1798,7 @@ const DB = {
         const st = tx.objectStore(o.s);
         if (o.clear) st.clear(); else if (o.put) st.put(o.put); else if (o.del) st.delete(o.del);
       }
-      tx.oncomplete = () => res();
+      tx.oncomplete = () => { res(); if (typeof jadwalCadanganOtomatis === 'function') jadwalCadanganOtomatis(); };
       tx.onerror = () => rej(tx.error);
       tx.onabort = () => rej(tx.error || new Error('Penyimpanan dibatalkan'));
     });
@@ -1966,7 +2033,8 @@ const V = {
   cek: (r, id) => { const el = $('#' + id, r); return !!(el && el.checked); },
   sel: (r, id) => { const el = $('#' + id, r); return el ? el.value : ''; },
 };
-/* live formatting */
+/* live formatting — capture phase, so the value is already formatted (e.g. "70.000")
+   before any form's own input listener reads it to update its totals */
 document.addEventListener('input', e => {
   const t = e.target;
   if (!t.classList) return;
@@ -1980,7 +2048,7 @@ document.addEventListener('input', e => {
     const dv = $('.dv', t.closest('.datebox'));
     dv.textContent = t.value ? tglF(t.value) : 'Pilih tanggal'; dv.classList.toggle('kosong', !t.value);
   }
-});
+}, true);
 document.addEventListener('change', e => {
   const t = e.target;
   if (t.type === 'date' && t.closest('.datebox')) t.dispatchEvent(new Event('input', { bubbles: true }));
@@ -2050,13 +2118,13 @@ const AFTER = {};
 function banners() {
   let h = '';
   if (MODE === 'contoh') h += '<div class="banner demo" role="note">' + ic('alert') + '<div><b>Mode data contoh</b>Ini data uji, terpisah dari data Anda.</div><button class="btn" data-act="keluar-contoh">Keluar</button></div>';
-  if (DB.mem) h += '<div class="banner bad" role="alert">' + ic('alert') + '<div><b>Penyimpanan perangkat tidak tersedia.</b>Data akan hilang saat aplikasi ditutup. Buka di Safari biasa (bukan mode Pribadi) atau pasang ke Layar Utama.</div></div>';
+  if (DB.mem) h += '<div class="banner bad" role="alert">' + ic('alert') + '<div><b>Penyimpanan perangkat tidak tersedia.</b>Data akan hilang saat aplikasi ditutup. ' + (ANDROID ? 'Buka di Chrome biasa (bukan tab Samaran) atau pasang ke layar utama.' : 'Buka di Safari biasa (bukan mode Pribadi) atau pasang ke Layar Utama.') + '</div></div>';
   const standalone = window.matchMedia && window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   if (window.BK_ARTIFACT && !pref.tutupPratinjau && UI.tab === 'beranda') h += '<div class="banner info">' + ic('alert') + '<div><b>Ini pratinjau</b>Untuk dipakai harian di iPhone, pasang paket PWA dari situs Anda sendiri (lihat PANDUAN). Pratinjau ini tidak bisa dipasang ke Layar Utama, ekspor file hanya berfungsi di aplikasi yang dipasang, dan datanya hanya tersimpan di browser ini.</div><button class="btn ghost" data-act="tutup-pratinjau" aria-label="Tutup catatan">' + ic('x') + '</button></div>';
-  if (!window.BK_ARTIFACT && !standalone && !pref.tutupPasang && UI.tab === 'beranda' && MODE !== 'contoh') h += '<div class="banner info">' + ic('share') + '<div><b>Pasang ke Layar Utama</b>Di Safari: ketuk Bagikan, lalu "Tambah ke Layar Utama". Data tetap di iPhone ini; simpan cadangan secara rutin.</div><button class="btn ghost" data-act="tutup-pasang" aria-label="Tutup saran">' + ic('x') + '</button></div>';
+  if (!window.BK_ARTIFACT && !NATIVE && !standalone && !pref.tutupPasang && UI.tab === 'beranda' && MODE !== 'contoh') h += '<div class="banner info">' + ic('share') + '<div><b>Pasang ke layar utama</b>' + (ANDROID ? 'Di Chrome: ketuk ⋮ (kanan atas), lalu "Tambahkan ke layar utama" atau "Instal aplikasi".' : 'Di Safari: ketuk Bagikan, lalu "Tambah ke Layar Utama".') + ' Data tetap di HP ini; simpan cadangan secara rutin.</div>' + (promptPasang ? '<button class="btn" data-act="pasang">Pasang</button>' : '') + '<button class="btn ghost" data-act="tutup-pasang" aria-label="Tutup saran">' + ic('x') + '</button></div>';
   const n = S.docs.filter(d => !d.dihapus).length;
   const last = S.meta.cadanganTerakhir;
-  if (UI.tab === 'beranda' && MODE !== 'contoh' && n >= 5 && (!last || C.diffDays(last.slice(0, 10), today()) >= 7)) h += '<div class="banner info">' + ic('down') + '<div><b>Simpan cadangan</b>' + (last ? 'Cadangan terakhir ' + tglF(last.slice(0, 10)) + '.' : 'Belum pernah ada cadangan.') + ' Simpan ke iCloud Drive atau kirim ke diri sendiri.</div><button class="btn" data-act="cadangan">Simpan</button></div>';
+  if (UI.tab === 'beranda' && MODE !== 'contoh' && n >= 5 && (!last || C.diffDays(last.slice(0, 10), today()) >= 7)) h += '<div class="banner info">' + ic('down') + '<div><b>Simpan cadangan</b>' + (last ? 'Cadangan terakhir ' + tglF(last.slice(0, 10)) + '.' : 'Belum pernah ada cadangan.') + ' ' + (NATIVE ? 'Cadangan otomatis ikut terhapus bila aplikasi dihapus, jadi simpan salinan ke iCloud Drive atau kirim ke diri sendiri.' : 'Simpan ke ' + (ANDROID ? 'Google Drive' : 'iCloud Drive') + ' atau kirim ke diri sendiri.') + '</div><button class="btn" data-act="cadangan">Simpan</button></div>';
   return h;
 }
 
@@ -2250,14 +2318,18 @@ function vABK() {
   for (const e of emps) {
     const r = C.ringkasABK(S, e.id);
     const per = { bulanan: 'Bulanan', mingguan: 'Mingguan', siklus: 'Per siklus panen' }[e.periode] || 'Bulanan';
+    const blnIni = today().slice(0, 7);
+    const lemburBln = C.sum(S.docs.filter(d => !d.dihapus && d.t === 'gaji' && d.emp === e.id && (d.komponen || 'pokok') === 'tambahan' && d.tgl.slice(0, 7) === blnIni).map(d => d.bruto));
     h += '<section class="card stack" aria-label="' + esc(e.nama) + '"><div class="section-h"><h2>' + esc(e.nama) + (e.aktif === false ? ' <span class="badge mute">Nonaktif</span>' : '') + '</h2><button class="btn ghost" data-act="edit-abk" data-id="' + e.id + '">' + ic('edit') + 'Ubah</button></div>' +
       '<dl class="kv"><dt>Gaji disepakati</dt><dd>' + rp(e.gaji || 0) + ' · ' + per + '</dd>' +
       (e.tglGajian ? '<dt>Tanggal gajian</dt><dd>' + esc(e.tglGajian) + '</dd>' : '') +
+      '<dt>Lembur / bonus ' + C.BLN[Number(blnIni.slice(5)) - 1] + '</dt><dd>' + rp(lemburBln) + '</dd>' +
       '<dt>Total kasbon</dt><dd>' + rp(r.kasbonTotal) + '</dd><dt>Kasbon sudah dipotong</dt><dd>' + rp(r.kasbonDipotong) + (r.kasbonLangsung ? ' + ' + rp(r.kasbonLangsung) + ' langsung' : '') + '</dd>' +
       '<dt>Sisa kasbon</dt><dd class="' + (r.sisaKasbon ? 'warn' : '') + '">' + rp(r.sisaKasbon) + '</dd>' +
       '<dt>Gaji belum dibayar</dt><dd class="' + (r.utangGaji ? 'bad' : '') + '">' + rp(r.utangGaji) + '</dd>' +
       '<dt>Gaji bersih terakhir</dt><dd>' + (r.bayarTerakhir ? rp(r.bayarTerakhir.tunai) + ' · ' + tglF(r.bayarTerakhir.tgl) : '–') + '</dd></dl>' +
-      '<div class="grid2"><button class="btn primary" data-act="baru" data-v="gaji" data-emp="' + e.id + '">' + ic('wallet') + 'Proses gaji</button><button class="btn" data-act="baru" data-v="kasbon" data-emp="' + e.id + '">' + ic('hand') + 'Kasbon</button>' +
+      '<div class="grid2"><button class="btn primary" data-act="baru" data-v="gaji" data-emp="' + e.id + '">' + ic('wallet') + 'Proses gaji</button><button class="btn" data-act="baru" data-v="lembur" data-emp="' + e.id + '">' + ic('plus') + 'Lembur / bonus</button>' +
+      '<button class="btn" data-act="baru" data-v="kasbon" data-emp="' + e.id + '">' + ic('hand') + 'Kasbon</button>' +
       (r.utangGaji > 0 ? '<button class="btn" data-act="baru" data-v="bgaji" data-emp="' + e.id + '">Bayar gaji terutang</button>' : '') +
       (r.sisaKasbon > 0 ? '<button class="btn" data-act="baru" data-v="bkasbon" data-emp="' + e.id + '">Pelunasan kasbon</button>' : '') + '</div></section>';
   }
@@ -2265,11 +2337,12 @@ function vABK() {
   const flt = UI.abk.emp;
   h += '<div class="section-h"><h2>Riwayat gaji & kasbon</h2></div><div class="chips" role="group">' + [{ id: '', nama: 'Semua' }].concat(emps).map(e => '<button class="chip" data-act="abk-filter" data-v="' + e.id + '" aria-pressed="' + (flt === e.id) + '">' + esc(e.nama) + '</button>').join('') + '</div>';
   const docs = S.docs.filter(d => !d.dihapus && ['gaji', 'bgaji', 'kasbon', 'bkasbon'].includes(d.t) && (!flt || d.emp === flt)).sort(urutTerbaru);
-  const lbl = { gaji: 'Gaji terutang', bgaji: 'Gaji dibayar', kasbon: 'Kasbon', bkasbon: 'Pelunasan kasbon' };
+  const lbl = { gaji: 'Gaji pokok', bgaji: 'Gaji dibayar', kasbon: 'Kasbon', bkasbon: 'Pelunasan kasbon' };
+  const judulRiwayat = d => (d.t === 'gaji' && (d.komponen || 'pokok') === 'tambahan' ? 'Lembur / bonus' : lbl[d.t]);
   h += docs.length ? '<div class="list">' + docs.slice(0, BATAS).map(d => {
     const amt = d.t === 'bgaji' ? rp(d.tunai) : rp(C.nominalDok(d));
-    const s = d.t === 'gaji' ? 'Periode ' + tglF(d.dari) + '–' + tglF(d.sampai) + ((d.komponen || 'pokok') === 'tambahan' ? ' · tambahan' : '') : d.t === 'bgaji' ? (d.potong ? 'Bruto ' + rp(d.tunai + d.potong) + ' − kasbon ' + rp(d.potong) : 'Tanpa potongan') : esc(d.metode || '');
-    return '<button class="item" data-act="detail" data-id="' + d.id + '"><span class="t">' + lbl[d.t] + ' · ' + esc(namaABK(d.emp)) + '</span><span class="a">' + amt + '</span><span class="s">' + tglF(d.tgl) + ' · ' + esc(d.no) + ' · ' + s + '</span><span></span></button>';
+    const s = d.t === 'gaji' ? ((d.komponen || 'pokok') === 'tambahan' && d.ket ? esc(d.ket) + ' · ' : '') + 'Periode ' + tglF(d.dari) + '–' + tglF(d.sampai) : d.t === 'bgaji' ? (d.potong ? 'Bruto ' + rp(d.tunai + d.potong) + ' − kasbon ' + rp(d.potong) : 'Tanpa potongan') : esc(d.metode || '');
+    return '<button class="item" data-act="detail" data-id="' + d.id + '"><span class="t">' + judulRiwayat(d) + ' · ' + esc(namaABK(d.emp)) + '</span><span class="a">' + amt + '</span><span class="s">' + tglF(d.tgl) + ' · ' + esc(d.no) + ' · ' + s + '</span><span></span></button>';
   }).join('') + '</div>' : kosong('Belum ada gaji atau kasbon.', null);
   return h;
 }
@@ -2330,7 +2403,7 @@ function hasilLaporan() {
     baris('Total pendapatan', r.pendapatan.total, { cls: 'tot' }) + '</tbody></table></section>';
 
   h += '<section class="card"><h3>B. Laporan Pengeluaran</h3><table class="ledger"><tbody>' +
-    r.beban.map(b => baris(b.nama, b.jumlah, { dd: { akun: 'BBN', kat: b.kat } })).join('') + baris('Total beban', r.bebanTotal, { cls: 'tot' }) +
+    r.beban.map(b => baris(b.nama, b.jumlah, { dd: { akun: 'BBN', kat: b.kat } }) + (b.kat === 'gaji' && r.lembur ? baris('termasuk lembur / bonus', r.lembur, { cls: 'sub', dd: { akun: 'BBN', kat: 'gaji', sub: 'lembur' } }) : '')).join('') + baris('Total beban', r.bebanTotal, { cls: 'tot' }) +
     '</tbody></table><p class="small muted">Kasbon ABK tidak termasuk beban. Kasbon dicatat sebagai piutang ABK (lihat Arus Kas dan Kasbon ABK). Ketuk baris untuk melihat transaksinya.</p></section>';
 
   const pj = r.pajak;
@@ -2721,61 +2794,111 @@ function periodeDefault(e) {
   if (e && e.periode === 'mingguan') return { dari: C.addDays(t, -6), sampai: t };
   return { dari: C.awalBulan(t), sampai: C.akhirBulan(t) };
 }
-function formGaji(empId) {
+/* Salary form. Gaji pokok and Lembur/bonus are separate fields that both ADD to the salary;
+ * the cash-advance deduction appears only when the crew member has an open advance.
+ * opt.lembur = overtime/bonus only (no base salary field). */
+const pokokTercatat = (emp, dari, sampai) => S.docs.find(x => !x.dihapus && x.t === 'gaji' && x.emp === emp &&
+  (x.komponen || 'pokok') === 'pokok' && C.isISO(dari) && C.isISO(sampai) && x.dari <= sampai && dari <= x.sampai);
+function formGaji(empId, opt) {
+  opt = opt || {};
+  const mLembur = !!opt.lembur;
   const em = opsiABK(); if (!em.length) return toast('Tambahkan ABK dulu di menu ABK.');
   const id0 = empId || em[0].v, e0 = S.employees.find(e => e.id === id0);
   const pd = periodeDefault(e0);
+  const baris = (id, label, cls) => '<tr class="' + (cls || '') + '"><td>' + label + '</td><td class="n" id="' + id + '">0</td></tr>';
   const isi = F.pilih('f-emp', 'ABK', em, id0) +
-    '<div class="grid2">' + F.tgl('f-dari', 'Periode gaji dari', pd.dari) + F.tgl('f-sampai', 'Sampai', pd.sampai) + '</div>' +
-    F.pilih('f-komp', 'Komponen', [{ v: 'pokok', l: 'Gaji pokok' }, { v: 'tambahan', l: 'Tambahan (bonus/lembur)' }], 'pokok') +
-    F.uang('f-bruto', 'Gaji bruto (yang menjadi beban)', e0.gaji || null) +
+    '<div class="grid2">' + F.tgl('f-dari', mLembur ? 'Periode lembur dari' : 'Periode gaji dari', pd.dari) + F.tgl('f-sampai', 'Sampai', pd.sampai) + '</div>' +
+    (mLembur ? '' : '<div class="stack" id="box-pokok" style="gap:6px">' + F.uang('f-pokok', 'Gaji pokok', e0.gaji || null) +
+      '<p class="small warn" id="info-pokok" style="margin:0" hidden></p></div>') +
+    F.uang('f-lembur', 'Lembur / bonus', null, { hint: 'menambah gaji · kosongkan bila tidak ada', auto: mLembur }) +
+    '<div id="box-ket" hidden>' + F.teks('f-ket', 'Keterangan lembur / bonus', '', { ph: 'mis. lembur 3 malam saat panen' }) + '</div>' +
     '<div class="taxbox" id="info-kb"></div>' +
-    F.uang('f-potong', 'Potongan kasbon', null) +
-    F.calc('f-bersih', 'Gaji bersih dibayarkan', 0) +
+    '<div id="box-potong" hidden>' + F.uang('f-potong', 'Potongan kasbon', null, { hint: 'mengurangi uang yang dibayarkan' }) + '</div>' +
+    '<div class="card flat" style="padding:4px 14px"><table class="ledger" aria-label="Rincian gaji"><tbody>' +
+      (mLembur ? '' : baris('r-pokok', 'Gaji pokok', 'sub')) + baris('r-lembur', '+ Lembur / bonus', 'sub') +
+      baris('r-total', mLembur ? 'Total lembur / bonus' : 'Total gaji', 'tot') + '<tr class="sub" id="tr-potong" hidden><td>− Potongan kasbon</td><td class="n" id="r-potong">0</td></tr>' +
+    '</tbody></table></div>' +
+    F.calc('f-bersih', 'Dibayarkan ke ABK', 0) +
     F.pilih('f-bayar', 'Pembayaran', [{ v: 'ya', l: 'Dibayar sekarang' }, { v: 'tidak', l: 'Belum dibayar (utang gaji)' }], 'ya') +
     '<div id="box-bayar" class="stack">' + F.tgl('f-tglbayar', 'Tanggal bayar', today(), { cepat: 1 }) + F.pilih('f-metode', 'Metode', opsiMetode(), 'Tunai') + '</div>' +
     '<details class="more"><summary>Tanggal pengakuan beban</summary>' + F.tgl('f-tgl', 'Beban gaji dicatat pada', pd.sampai, { hint: 'Biasanya akhir periode gaji. Laporan bulan itu memuat beban gaji ini.' }) + '</details>' +
-    '<p class="small muted" style="margin:0">Beban gaji dicatat sekali sebesar gaji bruto. Potongan kasbon melunasi piutang kasbon dan mengurangi uang yang dibayarkan; potongan ini bukan beban tambahan.</p>';
+    '<p class="small muted" style="margin:0">Gaji pokok dan lembur/bonus dicatat sebagai beban gaji ABK. Potongan kasbon hanya melunasi kasbon dan mengurangi uang yang dibayarkan; bukan beban tambahan.</p>';
   sheet({
-    judul: 'Proses gaji ABK', isi,
+    judul: mLembur ? 'Lembur / bonus ABK' : 'Proses gaji ABK', isi,
     onOpen(h) {
       const r = h.form;
       let potDisentuh = false, tglDisentuh = false;
+      const nilai = () => {
+        const id = V.pilih(r, 'f-emp'), ab = C.ringkasABK(S, id);
+        const ada = mLembur ? null : pokokTercatat(id, V.tgl(r, 'f-dari'), V.tgl(r, 'f-sampai'));
+        const pokok = mLembur || ada ? 0 : (V.uang(r, 'f-pokok') || 0);
+        const lembur = V.uang(r, 'f-lembur') || 0;
+        const pot = ab.sisaKasbon > 0 ? (V.uang(r, 'f-potong') || 0) : 0;
+        return { id, ab, ada, pokok, lembur, pot, total: pokok + lembur };
+      };
       const upd = (gantiEmp) => {
-        const id = V.pilih(r, 'f-emp'), e = S.employees.find(x => x.id === id), ab = C.ringkasABK(S, id);
+        const id = V.pilih(r, 'f-emp'), e = S.employees.find(x => x.id === id);
         if (gantiEmp) {
-          $('#f-bruto', r).value = e.gaji ? C.grp(e.gaji) : '';
+          if (!mLembur) $('#f-pokok', r).value = e.gaji ? C.grp(e.gaji) : '';
           const p = periodeDefault(e); setTgl(r, 'f-dari', p.dari); setTgl(r, 'f-sampai', p.sampai); if (!tglDisentuh) setTgl(r, 'f-tgl', p.sampai);
           potDisentuh = false;
         }
-        const bruto = V.uang(r, 'f-bruto') || 0;
-        if (!potDisentuh) $('#f-potong', r).value = Math.min(ab.sisaKasbon, bruto) ? C.grp(Math.min(ab.sisaKasbon, bruto)) : '';
-        const pot = V.uang(r, 'f-potong') || 0;
-        $('#info-kb', r).innerHTML = 'Sisa kasbon ' + esc(e.nama) + ': <b>' + rp(ab.sisaKasbon) + '</b>' + (ab.utangGaji ? '<br>Gaji lama belum dibayar: <b>' + rp(ab.utangGaji) + '</b>' : '');
-        $('#f-bersih', r).textContent = rp(bruto - pot);
+        let v = nilai();
+        if (!mLembur) {
+          const inp = $('#f-pokok', r), info = $('#info-pokok', r);
+          inp.disabled = !!v.ada;
+          if (v.ada) { inp.value = ''; info.hidden = false; info.textContent = 'Gaji pokok ' + e.nama + ' untuk ' + tglF(v.ada.dari) + '–' + tglF(v.ada.sampai) + ' sudah dicatat (' + v.ada.no + '). Isi lembur / bonus saja.'; }
+          else { info.hidden = true; if (!inp.value && inp.dataset.kosongkan) { inp.value = e.gaji ? C.grp(e.gaji) : ''; } }
+          inp.dataset.kosongkan = v.ada ? '1' : '';
+          v = nilai();
+        }
+        const adaKasbon = v.ab.sisaKasbon > 0;
+        $('#box-potong', r).hidden = !adaKasbon;
+        $('#tr-potong', r).hidden = !adaKasbon;
+        if (adaKasbon && !potDisentuh) { const x = Math.min(v.ab.sisaKasbon, v.total); $('#f-potong', r).value = x ? C.grp(x) : ''; v = nilai(); }
+        $('#info-kb', r).innerHTML = (adaKasbon ? 'Sisa kasbon ' + esc(e.nama) + ': <b>' + rp(v.ab.sisaKasbon) + '</b>' : 'Tidak ada kasbon ' + esc(e.nama) + ' yang perlu dipotong.') +
+          (v.ab.utangGaji ? '<br>Gaji lama belum dibayar: <b>' + rp(v.ab.utangGaji) + '</b>' : '');
+        $('#box-ket', r).hidden = !v.lembur;
+        if (!mLembur) $('#r-pokok', r).textContent = C.fmtAngka(v.pokok);
+        $('#r-lembur', r).textContent = C.fmtAngka(v.lembur);
+        $('#r-total', r).textContent = C.fmtAngka(v.total);
+        $('#r-potong', r).textContent = C.fmtAngka(v.pot);
+        $('#f-bersih', r).textContent = rp(v.total - v.pot);
         $('#box-bayar', r).hidden = V.pilih(r, 'f-bayar') !== 'ya';
       };
       r.addEventListener('input', e => { if (e.target.id === 'f-potong') potDisentuh = true; if (e.target.id === 'f-tgl') tglDisentuh = true; if (e.target.id === 'f-sampai' && !tglDisentuh) setTgl(r, 'f-tgl', V.tgl(r, 'f-sampai')); upd(false); });
       r.addEventListener('change', e => upd(e.target.name === 'f-emp'));
       upd(false);
+      h.nilai = nilai;
     },
     tombol: [{ label: 'Batal' }, {
       label: 'Simpan', cls: 'primary', async aksi(h) {
-        const r = h.form, emp = V.pilih(r, 'f-emp');
-        const g = { id: uid(), t: 'gaji', tgl: V.tgl(r, 'f-tgl'), emp, dari: V.tgl(r, 'f-dari'), sampai: V.tgl(r, 'f-sampai'), komponen: V.pilih(r, 'f-komp'), bruto: V.uang(r, 'f-bruto'), catatan: '' };
-        let errs = C.validasi(S, g);
-        const list = [{ doc: g, ringkas: 'Gaji ' + namaABK(emp) + ' ' + tglF(g.dari) + '–' + tglF(g.sampai) + ' ' + rp(g.bruto || 0) }];
-        if (!errs.length && V.pilih(r, 'f-bayar') === 'ya') {
-          const pot = V.uang(r, 'f-potong') || 0;
-          const b = { id: uid(), t: 'bgaji', tgl: V.tgl(r, 'f-tglbayar'), emp, gajiId: g.id, tunai: (g.bruto || 0) - pot, potong: pot, metode: V.pilih(r, 'f-metode'), catatan: '' };
-          if (b.tunai < 0) errs.push('Potongan kasbon tidak boleh melebihi gaji bruto.');
-          else errs = errs.concat(C.validasi(Object.assign({}, S, { docs: S.docs.concat([g]) }), b));
-          list.push({ doc: b, ringkas: 'Bayar gaji ' + namaABK(emp) + ': tunai ' + rp(b.tunai) + (pot ? ', potong kasbon ' + rp(pot) : '') });
+        const r = h.form, v = h.nilai(), emp = v.id, e = S.employees.find(x => x.id === emp);
+        const dasar = { t: 'gaji', tgl: V.tgl(r, 'f-tgl'), emp, dari: V.tgl(r, 'f-dari'), sampai: V.tgl(r, 'f-sampai'), catatan: '' };
+        let errs = [];
+        if (v.total <= 0) errs.push(mLembur ? 'Isi jumlah lembur / bonus.' : (v.ada ? 'Gaji pokok periode ini sudah dicatat. Isi lembur / bonus, atau ubah periodenya.' : 'Isi gaji pokok atau lembur / bonus.'));
+        const baru = [], list = [];
+        if (v.pokok > 0) baru.push(Object.assign({ id: uid(), komponen: 'pokok', bruto: v.pokok }, dasar));
+        if (v.lembur > 0) baru.push(Object.assign({ id: uid(), komponen: 'tambahan', bruto: v.lembur, ket: V.teks(r, 'f-ket') }, dasar));
+        for (const g of baru) {
+          errs = errs.concat(C.validasi(S, g));
+          list.push({ doc: g, ringkas: (g.komponen === 'pokok' ? 'Gaji pokok ' : 'Lembur/bonus ') + namaABK(emp) + ' ' + tglF(g.dari) + '–' + tglF(g.sampai) + ' ' + rp(g.bruto) + (g.ket ? ' (' + g.ket + ')' : '') });
+        }
+        errs = Array.from(new Set(errs));
+        const bayar = V.pilih(r, 'f-bayar') === 'ya';
+        if (!errs.length && bayar) {
+          const b = { id: uid(), t: 'bgaji', tgl: V.tgl(r, 'f-tglbayar'), emp, gajiId: baru[0].id, tunai: v.total - v.pot, potong: v.pot, metode: V.pilih(r, 'f-metode'), catatan: '' };
+          if (b.tunai < 0) errs.push('Potongan kasbon tidak boleh melebihi total gaji.');
+          else errs = errs.concat(C.validasi(Object.assign({}, S, { docs: S.docs.concat(baru) }), b));
+          list.push({ doc: b, ringkas: 'Bayar gaji ' + namaABK(emp) + ': tunai ' + rp(b.tunai) + (v.pot ? ', potong kasbon ' + rp(v.pot) : '') });
         }
         if (errs.length) return tampilError(h, errs);
+        if (v.lembur > 0 && e && e.gaji > 0 && v.lembur >= e.gaji &&
+          !(await tanya({ judul: 'Lembur / bonus sebesar gaji sebulan?', pesan: 'Lembur / bonus ' + esc(e.nama) + ' ' + rp(v.lembur) + ' sama atau lebih besar dari gaji pokoknya (' + rp(e.gaji) + '). Jumlahnya sudah benar?', ok: 'Ya, benar', batal: 'Periksa lagi' }))) return;
         const hasil = await simpanDocs(list);
         await h.tutup(true);
-        toast(hasil.length > 1 ? 'Gaji dicatat dan dibayar ' + rp(hasil[1].tunai) : 'Gaji dicatat sebagai utang gaji');
+        const dibayar = hasil.find(x => x.t === 'bgaji');
+        toast(dibayar ? (mLembur ? 'Lembur dicatat dan dibayar ' : 'Gaji dicatat dan dibayar ') + rp(dibayar.tunai) : (mLembur ? 'Lembur dicatat sebagai utang gaji' : 'Gaji dicatat sebagai utang gaji'));
         segarkan();
       },
     }],
@@ -2786,15 +2909,16 @@ function formGajiEdit(doc) {
   sheet({
     judul: 'Ubah ' + d.no,
     isi: '<p class="muted" style="margin:0">ABK: <b>' + esc(namaABK(d.emp)) + '</b></p><div class="grid2">' + F.tgl('f-dari', 'Periode dari', d.dari) + F.tgl('f-sampai', 'Sampai', d.sampai) + '</div>' +
-      F.pilih('f-komp', 'Komponen', [{ v: 'pokok', l: 'Gaji pokok' }, { v: 'tambahan', l: 'Tambahan (bonus/lembur)' }], d.komponen || 'pokok') +
-      F.uang('f-bruto', 'Gaji bruto', d.bruto) + F.tgl('f-tgl', 'Tanggal pengakuan beban', d.tgl) + F.area('f-catatan', 'Catatan', d.catatan),
+      F.pilih('f-komp', 'Jenis', [{ v: 'pokok', l: 'Gaji pokok' }, { v: 'tambahan', l: 'Lembur / bonus' }], d.komponen || 'pokok') +
+      F.uang('f-bruto', 'Jumlah', d.bruto, { hint: 'menambah gaji (beban gaji ABK)' }) + F.teks('f-ket', 'Keterangan lembur / bonus', d.ket || '', { ph: 'opsional' }) +
+      F.tgl('f-tgl', 'Tanggal pengakuan beban', d.tgl) + F.area('f-catatan', 'Catatan', d.catatan),
     tombol: [{ label: 'Batal' }, {
       label: 'Simpan', cls: 'primary', async aksi(h) {
         const r = h.form;
-        Object.assign(d, { dari: V.tgl(r, 'f-dari'), sampai: V.tgl(r, 'f-sampai'), komponen: V.pilih(r, 'f-komp'), bruto: V.uang(r, 'f-bruto'), tgl: V.tgl(r, 'f-tgl'), catatan: V.teks(r, 'f-catatan') });
+        Object.assign(d, { dari: V.tgl(r, 'f-dari'), sampai: V.tgl(r, 'f-sampai'), komponen: V.pilih(r, 'f-komp'), bruto: V.uang(r, 'f-bruto'), ket: V.teks(r, 'f-ket'), tgl: V.tgl(r, 'f-tgl'), catatan: V.teks(r, 'f-catatan') });
         const errs = C.validasi(S, d);
         const S2 = Object.assign({}, S, { docs: S.docs.map(x => (x.id === d.id ? d : x)) });
-        if (C.ringkasABK(S2, d.emp).utangGaji < 0) errs.push('Gaji bruto lebih kecil dari yang sudah dibayar. Ubah pembayarannya dulu.');
+        if (C.ringkasABK(S2, d.emp).utangGaji < 0) errs.push('Jumlah ini membuat gaji lebih kecil dari yang sudah dibayar. Ubah pembayarannya dulu.');
         if (errs.length) return tampilError(h, errs);
         await simpanDocs([{ doc: d }]); await h.tutup(true); toast(d.no + ' disimpan'); segarkan();
       },
@@ -3021,7 +3145,7 @@ function detailDoc(d) {
       ((d.perlakuan === 'dimuka' || d.perlakuan === 'aset') ? kv('Dibebankan', C.labelRentang(C.amortRentang(d).mulai, C.amortRentang(d).akhir) + ' (' + d.manfaat + ' bln)') + kv('Sudah dibebankan s.d. hari ini', rp(C.amortKumulatif(d, today()))) : '') +
       (d.penyesuaian ? kv('Penyesuaian', 'Ya') : '') + '</dl><div class="thumbs" id="thumbs"></div>';
   } else if (d.t === 'gaji') {
-    isi += kv('ABK', esc(namaABK(d.emp))) + kv('Periode', C.labelRentang(d.dari, d.sampai)) + kv('Komponen', (d.komponen || 'pokok') === 'pokok' ? 'Gaji pokok' : 'Tambahan') + kv('Gaji bruto (beban)', '<b>' + rp(d.bruto) + '</b>') + '</dl>';
+    isi += kv('ABK', esc(namaABK(d.emp))) + kv('Periode', C.labelRentang(d.dari, d.sampai)) + kv('Jenis', (d.komponen || 'pokok') === 'pokok' ? 'Gaji pokok' : 'Lembur / bonus') + kv('Keterangan', esc(d.ket || '')) + kv('Jumlah (beban gaji)', '<b>' + rp(d.bruto) + '</b>') + '</dl>';
   } else if (d.t === 'bgaji') {
     isi += kv('ABK', esc(namaABK(d.emp))) + kv('Gaji yang dilunasi', rp(d.tunai + d.potong)) + kv('Potongan kasbon', rp(d.potong)) + kv('Dibayar tunai/transfer', '<b>' + rp(d.tunai) + '</b>') + kv('Metode', esc(d.metode)) + '</dl>';
   } else if (d.t === 'kasbon' || d.t === 'bkasbon') {
@@ -3110,11 +3234,11 @@ function drill(kunci, label) {
   });
 }
 function bukaBaru(jenis, emp) {
-  ({ jual: () => formJual(), plain: () => formPlain(), biaya: () => formBiaya(), kas: () => formKas(), kasbon: () => formKasbon(null, emp), gaji: () => formGaji(emp), bgaji: () => formBayarGaji(null, emp), bkasbon: () => formBkasbon(null, emp), batch: () => formBatch(), pajak: () => formPajak() })[jenis]();
+  ({ jual: () => formJual(), plain: () => formPlain(), biaya: () => formBiaya(), kas: () => formKas(), kasbon: () => formKasbon(null, emp), gaji: () => formGaji(emp), lembur: () => formGaji(emp, { lembur: true }), bgaji: () => formBayarGaji(null, emp), bkasbon: () => formBkasbon(null, emp), batch: () => formBatch(), pajak: () => formPajak() })[jenis]();
 }
 function menuTambah() {
   const ba = batchAktif();
-  const opsi = [['jual', 'coin', 'Penjualan panen'], ['biaya', 'biaya', 'Pengeluaran'], ['kasbon', 'hand', 'Kasbon ABK'], ['gaji', 'wallet', 'Proses gaji ABK']]
+  const opsi = [['jual', 'coin', 'Penjualan panen'], ['biaya', 'biaya', 'Pengeluaran'], ['kasbon', 'hand', 'Kasbon ABK'], ['gaji', 'wallet', 'Proses gaji ABK'], ['lembur', 'plus', 'Lembur / bonus ABK']]
     .concat(ba.length ? [['mati', 'dead', 'Ayam mati']] : []).concat([['plain', 'panen', 'Pendapatan lain'], ['kas', 'wallet', 'Modal, prive, jaminan'], ['batch', 'batch', 'Batch DOC baru']]);
   const h = sheet({
     judul: 'Catat transaksi', tanpaDirty: true,
@@ -3302,16 +3426,17 @@ async function infoPenyimpanan() {
   try { if (navigator.storage && navigator.storage.persisted) pers = (await navigator.storage.persisted()) ? 'Ya' : 'Belum (browser boleh menghapus bila ruang penuh)'; } catch (e) { /* n/a */ }
   try { if (navigator.storage && navigator.storage.estimate) { const e = await navigator.storage.estimate(); est = (e.usage / 1048576).toFixed(1).replace('.', ',') + ' MB terpakai'; } } catch (e) { /* n/a */ }
   sheet({ judul: 'Penyimpanan & privasi', tanpaDirty: true,
-    isi: '<dl class="kv"><dt>Lokasi data</dt><dd>Di perangkat ini (IndexedDB browser)</dd><dt>Dikirim ke server?</dt><dd>Tidak. Aplikasi tidak punya server dan tidak mengirim data.</dd><dt>Penyimpanan permanen</dt><dd>' + pers + '</dd><dt>Ukuran</dt><dd>' + (est || '–') + '</dd><dt>Basis data</dt><dd>' + esc(DB.nama) + (DB.mem ? ' (sementara, di memori)' : '') + '</dd></dl>' +
+    isi: '<dl class="kv"><dt>Lokasi data</dt><dd>' + (NATIVE ? 'Di dalam aplikasi, di iPhone ini' : 'Di perangkat ini (IndexedDB browser)') + '</dd><dt>Dikirim ke server?</dt><dd>Tidak. Aplikasi tidak punya server dan tidak mengirim data.</dd><dt>Penyimpanan permanen</dt><dd>' + pers + '</dd><dt>Ukuran</dt><dd>' + (est || '–') + '</dd><dt>Basis data</dt><dd>' + esc(DB.nama) + (DB.mem ? ' (sementara, di memori)' : '') + '</dd></dl>' +
       '<ul class="small" style="padding-left:18px;display:flex;flex-direction:column;gap:6px;margin:0">' +
-      '<li>Data hanya ada di iPhone ini. Tidak ada sinkronisasi otomatis antar perangkat.</li>' +
-      '<li>Bila aplikasi dihapus dari Layar Utama, atau data situs dihapus di Pengaturan Safari, datanya ikut hilang. Simpan cadangan secara rutin.</li>' +
-      '<li>Data di perangkat tidak dienkripsi oleh aplikasi; keamanannya mengikuti kode sandi/Face ID iPhone. PIN aplikasi hanya menutup layar.</li>' +
+      '<li>Data hanya ada di HP ini. Tidak ada sinkronisasi otomatis antar perangkat.</li>' +
+      (NATIVE ? '<li>Setiap perubahan otomatis dicadangkan ke Files › Di iPhone Saya › Victory Farm › Cadangan otomatis (30 hari terakhir).</li><li>Bila aplikasi dihapus dari iPhone, data dan cadangan otomatis ikut terhapus. Simpan salinan cadangan ke iCloud Drive secara rutin.</li>'
+        : '<li>Bila aplikasi dihapus dari layar utama, atau data situs dihapus di pengaturan ' + (ANDROID ? 'Chrome' : 'Safari') + ', datanya ikut hilang. Simpan cadangan secara rutin.</li>') +
+      '<li>Data di perangkat tidak dienkripsi oleh aplikasi; keamanannya mengikuti kunci layar HP. PIN aplikasi hanya menutup layar.</li>' +
       '<li>Berkas cadangan bisa dienkripsi dengan kata sandi (AES-GCM 256-bit). Tanpa kata sandi, berkas cadangan bisa dibaca siapa pun yang memegangnya.</li></ul>',
     tombol: [{ label: 'Tutup' }] });
 }
 async function hapusSemua() {
-  const v = await tanya({ judul: 'Hapus semua data?', pesan: 'Semua transaksi, ABK, batch dan pengaturan di perangkat ini dihapus permanen. Simpan cadangan dulu bila perlu. Ketik <b>HAPUS</b> untuk melanjutkan.', input: 'Ketik HAPUS', ok: 'Hapus semua', bahaya: true });
+  const v = await tanya({ judul: 'Hapus semua data?', pesan: 'Semua transaksi, ABK, batch dan pengaturan di perangkat ini dihapus permanen. Simpan cadangan dulu bila perlu.' + (NATIVE ? ' Cadangan otomatis tetap ada dan akan ditawarkan saat aplikasi dibuka lagi.' : '') + ' Ketik <b>HAPUS</b> untuk melanjutkan.', input: 'Ketik HAPUS', ok: 'Hapus semua', bahaya: true });
   if (v === null) return;
   if (v.trim().toUpperCase() !== 'HAPUS') return toast('Tidak dihapus: ketik HAPUS untuk konfirmasi.');
   await DB.hapus(DB.nama);
@@ -3326,8 +3451,8 @@ function bagikanFile(blob, nama, teks) {
   const bisaShare = file && navigator.canShare && navigator.canShare({ files: [file] });
   sheet({ judul: 'File siap', tanpaDirty: true,
     isi: '<div class="calc small"><span>' + esc(nama) + '</span><b>' + (blob.size < 1024 ? blob.size + ' B' : Math.ceil(blob.size / 1024) + ' KB') + '</b></div>' +
-      '<p class="small muted" style="margin:0">Di iPhone pilih <b>Bagikan</b> lalu <b>Simpan ke File</b>, AirDrop, WhatsApp atau Mail.' + (teks ? ' CSV juga bisa disalin lalu ditempel ke spreadsheet.' : '') + '</p>' +
-      '<div class="stack">' + (DL ? '<button type="button" class="btn primary big" data-f="dl">' + ic('down') + 'Simpan file</button>' :
+      '<p class="small muted" style="margin:0">' + (ANDROID ? 'Pilih <b>Bagikan</b> lalu simpan ke Drive atau File, atau kirim lewat WhatsApp atau Gmail.' : 'Di iPhone pilih <b>Bagikan</b> lalu <b>Simpan ke File</b>, AirDrop, WhatsApp atau Mail.') + (teks ? ' CSV juga bisa disalin lalu ditempel ke spreadsheet.' : '') + '</p>' +
+      '<div class="stack">' + (NATIVE ? '<button type="button" class="btn primary big" data-f="asli">' + ic('share') + 'Bagikan / Simpan ke File</button>' : DL ? '<button type="button" class="btn primary big" data-f="dl">' + ic('down') + 'Simpan file</button>' :
       (bisaShare ? '<button type="button" class="btn primary big" data-f="share">' + ic('share') + 'Bagikan / Simpan ke File</button>' : '') +
       '<button type="button" class="btn big' + (bisaShare ? '' : ' primary') + '" data-f="unduh">' + ic('down') + 'Unduh</button>') +
       (teks ? '<button type="button" class="btn" data-f="salin">' + ic('copy') + 'Salin isi CSV</button>' : '') + '</div>' +
@@ -3336,6 +3461,10 @@ function bagikanFile(blob, nama, teks) {
       h.form.addEventListener('click', async e => {
         const b = e.target.closest('[data-f]'); if (!b) return;
         const st = $('#f-status', h.form);
+        if (b.dataset.f === 'asli') {
+          try { const r = await asli('bagikan', { nama, data: b64(new Uint8Array(await blob.arrayBuffer())) }); st.textContent = r === 'selesai' ? 'Selesai.' : ''; }
+          catch (x) { st.textContent = 'Lembar bagikan tidak bisa dibuka: ' + (x && x.message ? x.message : x); }
+        }
         if (b.dataset.f === 'dl') {
           try { await DL.save({ filename: nama, data: blob }); st.textContent = 'File disimpan.'; }
           catch (x) { const c = x && x.code; st.textContent = c === 'declined' ? '' : c === 'rate_limited' ? 'Masih ada konfirmasi yang terbuka. Coba lagi sebentar.' : 'Menyimpan file tidak tersedia di tampilan ini.'; }
@@ -3348,7 +3477,7 @@ function bagikanFile(blob, nama, teks) {
           const url = URL.createObjectURL(blob), a = document.createElement('a');
           a.href = url; a.download = nama; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove();
           setTimeout(() => URL.revokeObjectURL(url), 60000);
-          st.textContent = 'Jika tidak ada yang terjadi, buka aplikasi dari Layar Utama atau Safari (pratinjau tertentu memblokir unduhan).';
+          st.textContent = 'Jika tidak ada yang terjadi, buka aplikasi dari ikon di layar utama atau dari browser biasa.';
         }
         if (b.dataset.f === 'salin') {
           try { await navigator.clipboard.writeText(teks.replace(/^﻿/, '')); st.textContent = 'Isi CSV disalin.'; }
@@ -3377,11 +3506,13 @@ async function kunciDari(pw, salt, iter) {
   return crypto.subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 async function enkripsi(teks, pw) {
+  if (!subtleOK() && NATIVE) return JSON.parse(await asli('enkripsi', { teks, pw, format: C.SKEMA }));
   const salt = crypto.getRandomValues(new Uint8Array(16)), iv = crypto.getRandomValues(new Uint8Array(12)), iter = 210000;
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await kunciDari(pw, salt, iter), new TextEncoder().encode(teks));
   return { format: C.SKEMA, versi: 1, terenkripsi: true, kdf: { nama: 'PBKDF2-SHA256', iter, salt: b64(salt) }, sandi: 'AES-GCM-256', iv: b64(iv), data: b64(new Uint8Array(ct)) };
 }
 async function dekripsi(obj, pw) {
+  if (!subtleOK() && NATIVE) return JSON.parse(await asli('dekripsi', { obj: JSON.stringify(obj), pw }));
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(obj.iv) }, await kunciDari(pw, unb64(obj.kdf.salt), obj.kdf.iter), unb64(obj.data));
   return JSON.parse(new TextDecoder().decode(pt));
 }
@@ -3396,16 +3527,24 @@ function menuCadangan() {
     isi: '<p class="muted" style="margin:0">Cadangan berisi semua data (transaksi, ABK, batch, pengaturan, riwayat dan foto bukti) dalam satu berkas .json. Simpan di iCloud Drive, Google Drive, atau kirim ke diri sendiri.</p>' +
       F.teks('c-pw', 'Kata sandi cadangan (disarankan)', '', { type: 'password', hint: 'kosongkan untuk berkas tanpa enkripsi' }) + F.teks('c-pw2', 'Ulangi kata sandi', '', { type: 'password' }) +
       '<p class="small muted" style="margin:0">Kata sandi tidak disimpan di mana pun. Tanpa kata sandi itu, cadangan terenkripsi tidak bisa dibuka.</p>' +
+      (NATIVE ? '<div class="taxbox" id="c-otomatis">Memeriksa cadangan otomatis…</div>' : '') +
       '<hr style="border:0;border-top:1px solid var(--line);width:100%"><div class="fld"><span class="lbl">Pulihkan dari berkas cadangan</span><label class="btn" style="align-self:flex-start">' + ic('down') + 'Pilih berkas cadangan<input type="file" id="c-file" accept=".json,application/json" hidden></label><span class="hint">Data di perangkat ini akan diganti setelah Anda melihat ringkasannya.</span></div>',
     tanpaDirty: true,
-    onOpen(h) { $('#c-file', h.form).addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) await pulihkan(f); }); },
+    async onOpen(h) {
+      $('#c-file', h.form).addEventListener('change', async e => { const f = e.target.files[0]; e.target.value = ''; if (f) await pulihkan(f); });
+      if (NATIVE) {
+        await simpanCadanganOtomatis();
+        const info = await infoCadanganOtomatis(), box = $('#c-otomatis', h.form);
+        if (box) box.innerHTML = info ? '<b>Cadangan otomatis aktif</b><span>Terakhir ' + esc(waktuLokal(info.waktu)) + ' · ' + C.fmtAngka(info.transaksi || 0) + ' transaksi. Tersimpan di Files › Di iPhone Saya › Victory Farm › Cadangan otomatis (30 hari). Ikut terhapus bila aplikasi dihapus.</span>' : '<b>Cadangan otomatis</b><span>Belum ada; dibuat otomatis setelah perubahan berikutnya.</span>';
+      }
+    },
     tombol: [{ label: 'Tutup' }, { label: 'Buat cadangan', cls: 'primary', async aksi(h) {
       const pw = $('#c-pw', h.form).value, pw2 = $('#c-pw2', h.form).value;
       if (pw !== pw2) return tampilError(h, ['Kata sandi tidak sama.']);
       if (pw && pw.length < 6) return tampilError(h, ['Kata sandi minimal 6 karakter.']);
       tampilError(h, []);
       let obj = await isiCadangan();
-      if (pw) { if (!(window.crypto && crypto.subtle)) return tampilError(h, ['Enkripsi butuh koneksi aman (https). Buka aplikasi dari alamat https.']); obj = await enkripsi(JSON.stringify(obj), pw); }
+      if (pw) { if (!subtleOK() && !NATIVE) return tampilError(h, ['Enkripsi butuh koneksi aman (https). Buka aplikasi dari alamat https.']); obj = await enkripsi(JSON.stringify(obj), pw); }
       const blob = new Blob([JSON.stringify(obj)], { type: 'application/json' });
       const meta = clone(S.meta); meta.cadanganTerakhir = new Date().toISOString();
       await DB.tulis([{ s: 'kv', put: { k: 'meta', v: meta } }]); S.meta = meta;
@@ -3421,10 +3560,16 @@ async function pulihkan(file) {
     if (pw === null) return;
     try { obj = await dekripsi(obj, pw); } catch (e) { return tanya({ judul: 'Tidak bisa dibuka', pesan: 'Kata sandi salah atau berkas rusak.', ok: 'OK' }); }
   }
+  tinjauPulih(obj);
+}
+async function tinjauPulih(obj, opt) {
+  opt = opt || {};
+  let beres = false;
   const errs = C.validasiCadangan(obj);
-  if (errs.length) return tanya({ judul: 'Cadangan tidak valid', pesan: errs.map(esc).join('<br>'), ok: 'OK' });
+  if (errs.length) { await tanya({ judul: 'Cadangan tidak valid', pesan: errs.map(esc).join('<br>'), ok: 'OK' }); if (opt.saatKosong && !S.settings) mulaiPertama(); return; }
   const d = obj.data, tg = d.docs.map(x => x.tgl).sort();
   sheet({ judul: 'Pulihkan cadangan?', tanpaDirty: true,
+    onClose: () => { if (!beres && opt.saatKosong && !S.settings) mulaiPertama(); },
     isi: '<dl class="kv"><dt>Dibuat</dt><dd>' + (obj.dibuat ? waktuLokal(obj.dibuat) : '–') + '</dd><dt>Usaha</dt><dd>' + esc((d.settings.usaha || {}).nama || '–') + '</dd><dt>Transaksi</dt><dd>' + d.docs.filter(x => !x.dihapus).length + '</dd><dt>Rentang tanggal</dt><dd>' + (tg.length ? C.labelRentang(tg[0], tg[tg.length - 1]) : '–') + '</dd><dt>ABK</dt><dd>' + d.employees.filter(e => !e.dihapus).length + '</dd><dt>Batch</dt><dd>' + d.batches.filter(b => !b.dihapus).length + '</dd><dt>Foto bukti</dt><dd>' + (d.files || []).length + '</dd></dl>' +
       '<div class="banner bad">' + ic('alert') + '<div><b>Data di perangkat ini akan diganti.</b>Saat ini ada ' + S.docs.filter(x => !x.dihapus).length + ' transaksi. Simpan cadangan data sekarang dulu bila masih diperlukan.</div></div>',
     tombol: [{ label: 'Batal' }, { label: 'Ganti data', cls: 'danger solid', async aksi(h) {
@@ -3434,7 +3579,7 @@ async function pulihkan(file) {
       for (const f of d.files || []) ops.push({ s: 'files', put: { id: f.id, type: f.type, nama: f.nama, blob: new Blob([unb64(f.b64)], { type: f.type }), ukuran: 0 } });
       ops.push({ s: 'audit', put: audit('impor', 'cadangan', 'cadangan', '', 'Pulihkan cadangan ' + (obj.dibuat || '').slice(0, 10) + ' (' + d.docs.length + ' transaksi)') });
       await DB.tulis(ops);
-      await muatState(); LAP = null;
+      await muatState(); LAP = null; beres = true;
       SHEETS.slice().reverse().forEach(s => s.tutup(true));
       toast('Cadangan dipulihkan'); render();
     } }] });
@@ -3442,17 +3587,18 @@ async function pulihkan(file) {
 
 /* ---------------- PIN */
 async function hashPin(pin, salt, iter) {
+  if (!subtleOK() && NATIVE) return asli('hashPin', { pin, salt, iter });
   const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']);
   return b64(new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: unb64(salt), iterations: iter }, base, 256)));
 }
 function formPin() {
   const ada = !!S.settings.keamanan.pin;
   sheet({ judul: 'Kunci PIN',
-    isi: '<p class="muted" style="margin:0">PIN menutup layar aplikasi saat dibuka dan setelah 3 menit di latar belakang. PIN tidak mengenkripsi data; lindungi iPhone dengan kode sandi/Face ID.</p>' +
+    isi: '<p class="muted" style="margin:0">PIN menutup layar aplikasi saat dibuka dan setelah 3 menit di latar belakang. PIN tidak mengenkripsi data; lindungi HP dengan kunci layar.</p>' +
       (ada ? F.teks('p-lama', 'PIN sekarang', '', { type: 'password' }) : '') + F.teks('p-baru', ada ? 'PIN baru (kosongkan untuk mematikan)' : 'PIN baru (4–8 angka)', '', { type: 'password' }) + F.teks('p-ulang', 'Ulangi PIN baru', '', { type: 'password' }),
     onOpen(h) { $$('input[type=password]', h.form).forEach(i => { i.inputMode = 'numeric'; i.autocomplete = 'off'; }); },
     tombol: [{ label: 'Batal' }, { label: 'Simpan', cls: 'primary', async aksi(h) {
-      if (!(window.crypto && crypto.subtle)) return tampilError(h, ['PIN butuh koneksi aman (https).']);
+      if (!subtleOK() && !NATIVE) return tampilError(h, ['PIN butuh koneksi aman (https).']);
       const r = h.form, lama = V.teks(r, 'p-lama'), baru = V.teks(r, 'p-baru'), ulang = V.teks(r, 'p-ulang'), pin = S.settings.keamanan.pin;
       if (ada && (await hashPin(lama, pin.salt, pin.iter)) !== pin.hash) return tampilError(h, ['PIN sekarang salah.']);
       if (baru !== ulang) return tampilError(h, ['PIN baru tidak sama.']);
@@ -3468,7 +3614,7 @@ function kunci() {
   if (!S.settings || !S.settings.keamanan.pin || $('.lock')) return;
   const w = document.createElement('div');
   w.className = 'lock';
-  w.innerHTML = '<div class="brand-hero">' + logo() + BRAND.word + '</div><h2>' + ic('lock').replace('<svg', '<svg width="22" height="22" style="vertical-align:-3px"') + ' Terkunci</h2><form id="lockf" class="stack" style="align-items:center"><label class="sr" for="pin-in">PIN</label><input class="inp" id="pin-in" type="password" inputmode="numeric" autocomplete="off" maxlength="8"><button class="btn primary big" style="min-width:200px">Buka</button><p class="small bad" id="pin-msg" role="alert"></p></form><p class="small muted" style="max-width:300px;text-align:center">Lupa PIN? Hapus data situs di Pengaturan iPhone, lalu pulihkan dari berkas cadangan.</p>';
+  w.innerHTML = '<div class="brand-hero">' + logo() + BRAND.word + '</div><h2>' + ic('lock').replace('<svg', '<svg width="22" height="22" style="vertical-align:-3px"') + ' Terkunci</h2><form id="lockf" class="stack" style="align-items:center"><label class="sr" for="pin-in">PIN</label><input class="inp" id="pin-in" type="password" inputmode="numeric" autocomplete="off" maxlength="8"><button class="btn primary big" style="min-width:200px">Buka</button><p class="small bad" id="pin-msg" role="alert"></p></form><p class="small muted" style="max-width:300px;text-align:center">Lupa PIN? Hapus data situs untuk alamat aplikasi ini di pengaturan browser, lalu pulihkan dari berkas cadangan.</p>';
   document.body.appendChild(w);
   $('#pin-in', w).focus();
   $('#lockf', w).addEventListener('submit', async e => {
@@ -3527,7 +3673,7 @@ function mulaiPertama() {
   };
   sheet({
     judul: 'Selamat datang',
-    isi: '<div class="brand-hero">' + logo() + BRAND.word + '</div><p class="muted" style="margin:0;text-align:center">Pembukuan kandang ayam dari DOC masuk sampai panen. Data tersimpan di iPhone ini saja.</p>' +
+    isi: '<div class="brand-hero">' + logo() + BRAND.word + '</div><p class="muted" style="margin:0;text-align:center">Pembukuan kandang ayam dari DOC masuk sampai panen. Data tersimpan di HP ini saja.</p>' +
       F.teks('o-nama', 'Nama usaha', 'Victory Chicken Farm') + F.teks('o-pemilik', 'Nama pemilik', 'Victor') +
       '<div class="grid2">' + F.tgl('o-tgl', 'Mulai mencatat', C.awalBulan(today())) + F.uang('o-kas', 'Saldo kas & bank awal', null) + '</div>' +
       '<div class="grid2">' + F.teks('o-a1', 'Nama ABK 1', 'ABK 1') + F.uang('o-g1', 'Gaji ABK 1', null) + '</div>' +
@@ -3556,7 +3702,7 @@ const ACT = {
     if (UI.tab === 'biaya') return bukaBaru(UI.biaya.tab === 'kas' ? 'kas' : 'biaya');
     if (UI.tab === 'batch') return formBatch();
     if (UI.tab === 'abk') {
-      return sheet({ judul: 'Catat untuk ABK', tanpaDirty: true, isi: '<div class="quick" style="grid-template-columns:repeat(2,1fr)">' + [['gaji', 'wallet', 'Proses gaji'], ['kasbon', 'hand', 'Kasbon'], ['bgaji', 'coin', 'Bayar gaji terutang'], ['bkasbon', 'hand', 'Pelunasan kasbon']].map(o => '<button type="button" class="qbtn" data-j="' + o[0] + '">' + ic(o[1]) + o[2] + '</button>').join('') + '</div>',
+      return sheet({ judul: 'Catat untuk ABK', tanpaDirty: true, isi: '<div class="quick" style="grid-template-columns:repeat(2,1fr)">' + [['gaji', 'wallet', 'Proses gaji'], ['lembur', 'plus', 'Lembur / bonus'], ['kasbon', 'hand', 'Kasbon'], ['bgaji', 'coin', 'Bayar gaji terutang'], ['bkasbon', 'hand', 'Pelunasan kasbon']].map(o => '<button type="button" class="qbtn" data-j="' + o[0] + '">' + ic(o[1]) + o[2] + '</button>').join('') + '</div>',
         onOpen(h) { h.form.addEventListener('click', async e => { const b = e.target.closest('[data-j]'); if (b) { await h.tutup(true); bukaBaru(b.dataset.j, UI.abk.emp || undefined); } }); } });
     }
     menuTambah();
@@ -3583,6 +3729,12 @@ const ACT = {
   'lihat-piutang': () => { UI.tab = 'panen'; Object.assign(UI.panen, { tab: 'jual', kode: 'semua', status: 'piutang', q: '' }); render(); },
   'keluar-contoh': () => keluarContoh(),
   'tutup-pasang': () => { pref.tutupPasang = true; simpanPref(); render(); },
+  pasang: async () => {
+    if (!promptPasang) return;
+    const p = promptPasang; promptPasang = null;
+    try { p.prompt(); const c = await p.userChoice; if (c && c.outcome === 'accepted') { pref.tutupPasang = true; simpanPref(); toast('Aplikasi dipasang di layar utama'); } } catch (e) { /* dismissed */ }
+    render();
+  },
   'tutup-pratinjau': () => { pref.tutupPratinjau = true; simpanPref(); render(); },
   cadangan: () => menuCadangan(),
   'lap-preset': el => {
@@ -3622,11 +3774,11 @@ async function init() {
   await muatState();
   if (!S.settings) {
     if (MODE === 'contoh' || (window.BK_ARTIFACT && !lsGet('bk-pernah', false))) { lsSet('bk-pernah', true); await masukContoh(); }
-    else { $('#main').innerHTML = '<div class="card flat empty">Menyiapkan Victory Chicken Farm…</div>'; mulaiPertama(); }
+    else { $('#main').innerHTML = '<div class="card flat empty">Menyiapkan Victory Chicken Farm…</div>'; if (!(NATIVE && await tawarkanPulihOtomatis())) mulaiPertama(); }
   } else render();
   kunci();
   if (window.BK_ARTIFACT && window.claude && window.claude.use) window.claude.use('downloads').then(x => { DL = x; }).catch(() => { DL = null; });
-  if ('serviceWorker' in navigator && !window.BK_ARTIFACT && window.top === window && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  if ('serviceWorker' in navigator && !window.BK_ARTIFACT && !NATIVE && window.top === window && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     navigator.serviceWorker.register('sw.js').catch(() => { /* offline cache unavailable */ });
   }
 }
